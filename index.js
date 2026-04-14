@@ -21,6 +21,8 @@ import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 import { confirmIndicatorPreset } from "./tools/chart-indicators.js";
+import { evaluatePaperTrades } from "./paper-evaluator.js";
+import { getPaperStatus, getPaperTradeById, getPaperWalletSummary } from "./paper-engine.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -89,6 +91,30 @@ function sanitizeUntrustedPromptText(text, maxLen = 500) {
     .trim()
     .slice(0, maxLen);
   return cleaned ? JSON.stringify(cleaned) : null;
+}
+
+async function evaluatePaperState(now = Date.now()) {
+  if (!(process.env.DRY_RUN === "true" && config.paper?.enabled)) {
+    return { evaluated: 0, closed: 0, open: 0, errors: 0, skipped: true };
+  }
+  return evaluatePaperTrades({
+    now,
+    horizonsMin: config.paper.evaluationHorizonsMin,
+    primaryHorizonMin: config.paper.primaryHorizonMin,
+    takeProfitPct: config.paper.takeProfitPct,
+    stopLossPct: config.paper.stopLossPct,
+    autoCloseAtMaxHorizon: config.paper.autoCloseAtMaxHorizon,
+    priceFetcher: async (poolAddress) => {
+      const { getPoolDetail } = await import("./tools/screening.js");
+      const detail = await getPoolDetail({ pool_address: poolAddress });
+      return {
+        price: detail?.active_price ?? detail?.price ?? detail?.current_price ?? null,
+        active_bin: detail?.active_bin ?? null,
+        volatility: detail?.volatility ?? null,
+        fee_active_tvl_ratio: detail?.fee_active_tvl_ratio ?? detail?.fee_tvl_ratio ?? null,
+      };
+    },
+  });
 }
 
 async function confirmExitIndicator(position, closeReason) {
@@ -206,6 +232,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     if (!silent && telegramEnabled()) {
       liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
     }
+    await evaluatePaperState();
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
 
@@ -361,8 +388,11 @@ After executing, write a brief one-line result per position.
     // Trigger screening after management
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
-    if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
-      log("cron", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`);
+    const maxOpenPositions = process.env.DRY_RUN === "true" && config.paper?.enabled
+      ? config.paper.maxOpenTrades
+      : config.risk.maxPositions;
+    if (afterCount < maxOpenPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
+      log("cron", `Post-management: ${afterCount}/${maxOpenPositions} positions — triggering screening`);
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
     }
   } catch (error) {
@@ -398,21 +428,32 @@ export async function runScreeningCycle({ silent = false } = {}) {
   let liveMessage = null;
   let screenReport = null;
   try {
+    await evaluatePaperState();
     [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-    if (prePositions.total_positions >= config.risk.maxPositions) {
-      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
+    const maxOpenPositions = process.env.DRY_RUN === "true" && config.paper?.enabled
+      ? config.paper.maxOpenTrades
+      : config.risk.maxPositions;
+    if (prePositions.total_positions >= maxOpenPositions) {
+      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${maxOpenPositions})`);
+      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${maxOpenPositions}).`;
       appendDecision({
         type: "skip",
         actor: "SCREENER",
         summary: "Screening skipped",
-        reason: `Max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`,
+        reason: `Max positions reached (${prePositions.total_positions}/${maxOpenPositions})`,
       });
       _screeningBusy = false;
       return screenReport;
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
     const isDryRun = process.env.DRY_RUN === "true";
+    const paperMinRequired = config.management.deployAmountSol + (config.paper?.reserveGasBufferSol ?? 0);
+    if (isDryRun && config.paper?.enabled && preBalance.sol < paperMinRequired) {
+      log("cron", `Screening skipped — insufficient paper SOL (${preBalance.sol.toFixed(3)} < ${paperMinRequired} needed for deploy + reserve)`);
+      screenReport = `Screening skipped — insufficient paper SOL (${preBalance.sol.toFixed(3)} < ${paperMinRequired} needed for deploy + reserve).`;
+      _screeningBusy = false;
+      return screenReport;
+    }
     if (!isDryRun && preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
       screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
@@ -910,13 +951,34 @@ function describeLatestCandidates(limit = 5) {
 function formatWalletStatus(wallet, positions) {
   const deployAmount = computeDeployAmount(wallet.sol);
   const hive = isHiveMindEnabled() ? "on" : "off";
-  return [
+  const maxOpenPositions = process.env.DRY_RUN === "true" && config.paper?.enabled
+    ? config.paper.maxOpenTrades
+    : config.risk.maxPositions;
+  const lines = [
     `Wallet: ${wallet.sol} SOL ($${wallet.sol_usd})`,
     `SOL price: $${wallet.sol_price}`,
-    `Open positions: ${positions.total_positions}/${config.risk.maxPositions}`,
+    `Open positions: ${positions.total_positions}/${maxOpenPositions}`,
     `Next deploy amount: ${deployAmount} SOL`,
     `Dry run: ${process.env.DRY_RUN === "true" ? "yes" : "no"}`,
     `HiveMind: ${hive}`,
+  ];
+  if (wallet.paper_wallet) {
+    lines.push(`Paper equity: ${wallet.paper_wallet.equity_sol} SOL | free ${wallet.paper_wallet.free_balance_sol} | reserved ${wallet.paper_wallet.reserved_balance_sol}`);
+  }
+  return lines.join("\n");
+}
+
+function formatPaperStatus() {
+  const status = getPaperStatus({});
+  return [
+    "Paper trading status",
+    `Open trades: ${status.open_trade_count}`,
+    `Closed trades: ${status.closed_trade_count}`,
+    `Free: ${status.wallet.free_balance_sol} SOL`,
+    `Reserved: ${status.wallet.reserved_balance_sol} SOL`,
+    `Realized PnL: ${status.wallet.realized_pnl_sol} SOL`,
+    `Unrealized PnL: ${status.wallet.unrealized_pnl_sol} SOL`,
+    `Equity: ${status.wallet.equity_sol} SOL`,
   ].join("\n");
 }
 
@@ -957,6 +1019,9 @@ function formatHelpText() {
     "/wallet — wallet, deploy amount, HiveMind status",
     "/positions — list open positions",
     "/pool <n> — detailed info for one open position",
+    "/paper — paper trading summary",
+    "/paperwallet — paper wallet summary",
+    "/papertrade <id> — inspect one paper trade",
     "/close <n> — close one position by index",
     "/closeall — close all open positions",
     "/set <n> <note> — set note/instruction on position",
@@ -1090,6 +1155,43 @@ async function telegramHandler(msg) {
     return;
   }
 
+  if (text === "/paper") {
+    await sendMessage(formatPaperStatus()).catch(() => {});
+    return;
+  }
+
+  if (text === "/paperwallet") {
+    const wallet = getPaperWalletSummary({});
+    await sendMessage([
+      "Paper wallet",
+      `Free: ${wallet.free_balance_sol} SOL`,
+      `Reserved: ${wallet.reserved_balance_sol} SOL`,
+      `Realized PnL: ${wallet.realized_pnl_sol} SOL`,
+      `Unrealized PnL: ${wallet.unrealized_pnl_sol} SOL`,
+      `Equity: ${wallet.equity_sol} SOL`,
+    ].join("\n")).catch(() => {});
+    return;
+  }
+
+  const paperTradeMatch = text.match(/^\/papertrade\s+(.+)$/i);
+  if (paperTradeMatch) {
+    const trade = getPaperTradeById({ tradeId: paperTradeMatch[1].trim() }).trade;
+    if (!trade) {
+      await sendMessage("Paper trade not found.").catch(() => {});
+      return;
+    }
+    await sendMessage([
+      `Paper trade: ${trade.id}`,
+      `Status: ${trade.status}`,
+      `Pool: ${trade.pool_name || trade.pool_address || "unknown"}`,
+      `Allocated: ${trade.allocated_sol} SOL`,
+      `Return: ${trade.latest_mark?.return_pct ?? trade.final_return_pct ?? 0}%`,
+      `Unrealized: ${trade.latest_mark?.unrealized_pnl_sol ?? 0} SOL`,
+      trade.close_reason_code ? `Close reason: ${trade.close_reason_code}` : null,
+    ].filter(Boolean).join("\n")).catch(() => {});
+    return;
+  }
+
   if (text === "/positions") {
     try {
       const { positions, total_positions } = await getMyPositions({ force: true });
@@ -1137,7 +1239,7 @@ async function telegramHandler(msg) {
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
       await sendMessage(`Closing ${pos.pair}...`);
-      const result = await closePosition({ position_address: pos.position });
+      const result = await executeTool("close_position", { position_address: pos.position, reason: "telegram_close" });
       if (result.success) {
         const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
         const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
@@ -1157,7 +1259,7 @@ async function telegramHandler(msg) {
       const results = [];
       for (const pos of positions) {
         try {
-          const result = await closePosition({ position_address: pos.position });
+          const result = await executeTool("close_position", { position_address: pos.position, reason: "telegram_close_all" });
           results.push(`${pos.pair}: ${result.success ? "closed" : `failed (${result.error || "unknown"})`}`);
         } catch (error) {
           results.push(`${pos.pair}: failed (${error.message})`);

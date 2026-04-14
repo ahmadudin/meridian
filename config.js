@@ -156,6 +156,21 @@ export const config = {
     rsiOverbought: indicatorUserConfig.rsiOverbought ?? 80,
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
   },
+
+  paper: {
+    enabled: u.paperEnabled ?? false,
+    startingBalanceSol: u.paperStartingBalanceSol ?? 2,
+    maxOpenTrades: u.paperMaxOpenTrades ?? 5,
+    evaluationHorizonsMin: Array.isArray(u.paperEvaluationHorizonsMin) && u.paperEvaluationHorizonsMin.length > 0
+      ? u.paperEvaluationHorizonsMin
+      : [5, 15, 60],
+    primaryHorizonMin: u.paperPrimaryHorizonMin ?? 15,
+    takeProfitPct: u.paperTakeProfitPct ?? 3,
+    stopLossPct: u.paperStopLossPct ?? -3,
+    autoCloseAtMaxHorizon: u.paperAutoCloseAtMaxHorizon ?? true,
+    reserveGasBufferSol: u.paperReserveGasBufferSol ?? 0.2,
+    telegramStatusEnabled: u.paperTelegramStatusEnabled ?? false,
+  },
 };
 
 /**

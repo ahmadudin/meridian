@@ -107,6 +107,39 @@ Updates a config key. Parses value as JSON when possible.
 Valid keys: minTvl, maxTvl, minVolume, maxPositions, deployAmountSol, managementIntervalMin, screeningIntervalMin, managementModel, screeningModel, generalModel, autoSwapAfterClaim, minClaimAmount, outOfRangeWaitMinutes
 \`\`\`
 
+### meridian paper status
+Returns paper trading summary.
+
+### meridian paper wallet
+Returns paper wallet summary.
+
+### meridian paper ledger [--limit 50]
+Returns recent paper ledger events.
+
+### meridian paper init --balance <sol>
+Initializes/reset paper state with a starting balance.
+
+### meridian paper reset --balance <sol>
+Resets paper state with a starting balance.
+
+### meridian paper deposit --amount <sol>
+Deposits paper capital.
+
+### meridian paper withdraw --amount <sol>
+Withdraws free paper capital.
+
+### meridian paper reconcile
+Reconciles canonical paper state.
+
+### meridian paper inspect --trade <id>
+Returns one paper trade.
+
+### meridian paper rejects
+Summarizes rejected paper deploys by reason code.
+
+### meridian paper purge
+Clears paper state to zero balance.
+
 ### meridian start [--dry-run]
 Starts the autonomous agent with cron jobs (management + screening).
 
@@ -145,6 +178,8 @@ const { values: flags } = parseArgs({
     "dry-run":    { type: "boolean" },
     "silent":     { type: "boolean" },
     limit:        { type: "string" },
+    balance:      { type: "string" },
+    trade:        { type: "string" },
   },
   allowPositionals: true,
   strict: false,
@@ -336,6 +371,70 @@ switch (subcommand) {
       die(`Unknown config subcommand: ${sub2}. Use: get, set`);
     }
     break;
+  }
+
+  // ── paper ────────────────────────────────────────────────────────
+  case "paper": {
+    const {
+      depositPaperCapital,
+      getPaperLedger,
+      getPaperRejectSummary,
+      getPaperStatus,
+      getPaperTradeById,
+      getPaperWalletSummary,
+      initPaperState,
+      purgePaperState,
+      withdrawPaperCapital,
+    } = await import("./paper-engine.js");
+    const { reconcilePaperState } = await import("./paper-state.js");
+    const { config } = await import("./config.js");
+
+    if (sub2 === "status" || !sub2) {
+      out(getPaperStatus({}));
+      break;
+    }
+    if (sub2 === "wallet") {
+      out(getPaperWalletSummary({}));
+      break;
+    }
+    if (sub2 === "ledger") {
+      out(getPaperLedger({ limit: parseInt(flags.limit || "50", 10) }));
+      break;
+    }
+    if (sub2 === "init" || sub2 === "reset") {
+      const balance = parseFloat(flags.balance || flags.amount || "0");
+      out(initPaperState({ startingBalanceSol: balance || config.paper.startingBalanceSol }));
+      break;
+    }
+    if (sub2 === "deposit") {
+      const amount = parseFloat(flags.amount || "0");
+      out(await depositPaperCapital({ amountSol: amount }));
+      break;
+    }
+    if (sub2 === "withdraw") {
+      const amount = parseFloat(flags.amount || "0");
+      out(await withdrawPaperCapital({ amountSol: amount }));
+      break;
+    }
+    if (sub2 === "reconcile") {
+      out(reconcilePaperState({}));
+      break;
+    }
+    if (sub2 === "inspect") {
+      const tradeId = flags.trade || argv.filter(a => !a.startsWith("-"))[2];
+      if (!tradeId) die("Usage: meridian paper inspect --trade <id>");
+      out(getPaperTradeById({ tradeId }));
+      break;
+    }
+    if (sub2 === "rejects") {
+      out(getPaperRejectSummary({}));
+      break;
+    }
+    if (sub2 === "purge") {
+      out(purgePaperState({}));
+      break;
+    }
+    die(`Unknown paper subcommand: ${sub2}`);
   }
 
   // ── start ────────────────────────────────────────────────────────

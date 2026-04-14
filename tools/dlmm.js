@@ -24,6 +24,7 @@ import { recordPerformance } from "../lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 import { appendDecision } from "../decision-log.js";
+import { getPaperPositions } from "../paper-engine.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -786,6 +787,10 @@ async function fetchOpenPositionsFromMeridian({ walletAddress, agentId }) {
 
 // ─── Get My Positions ──────────────────────────────────────────
 export async function getMyPositions({ force = false, silent = false } = {}) {
+  if (process.env.DRY_RUN === "true" && config.paper?.enabled) {
+    return getPaperPositions({});
+  }
+
   if (!force && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
     return _positionsCache;
   }

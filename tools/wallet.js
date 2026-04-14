@@ -8,6 +8,7 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getPaperWalletSummary } from "../paper-engine.js";
 
 let _connection = null;
 let _wallet = null;
@@ -39,6 +40,21 @@ export async function getWalletBalances() {
     walletAddress = getWallet().publicKey.toString();
   } catch {
     return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
+  }
+
+  if (process.env.DRY_RUN === "true" && config.paper?.enabled) {
+    const paperWallet = getPaperWalletSummary({});
+    return {
+      wallet: walletAddress,
+      sol: paperWallet.free_balance_sol,
+      sol_price: 0,
+      sol_usd: 0,
+      usdc: 0,
+      tokens: [],
+      total_usd: 0,
+      paper: true,
+      paper_wallet: paperWallet,
+    };
   }
 
   const HELIUS_KEY = process.env.HELIUS_API_KEY;

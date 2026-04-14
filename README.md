@@ -116,6 +116,13 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 | `category` | `trending` | Pool category filter for screening |
 | `takeProfitPct` | `5` | Close position when PnL reaches this % threshold |
 | `outOfRangeWaitMinutes` | `30` | Minutes a position can be out of range before alerting / acting |
+| `paperEnabled` | `false` | Enable canonical paper trading engine in DRY_RUN mode |
+| `paperStartingBalanceSol` | `2` | Starting paper balance in SOL |
+| `paperMaxOpenTrades` | `5` | Maximum simultaneous paper trades |
+| `paperEvaluationHorizonsMin` | `[5,15,60]` | Evaluation horizons for paper trade marking/closing |
+| `paperPrimaryHorizonMin` | `15` | Primary horizon used for take-profit / stop-loss checks |
+| `paperTakeProfitPct` | `3` | Paper close threshold for wins |
+| `paperStopLossPct` | `-3` | Paper close threshold for losses |
 
 ---
 
@@ -175,6 +182,38 @@ Security notes:
 - On close: pair and PnL
 
 You can also chat with the agent via Telegram using the same free-form interface as the REPL: `"check wallet 7tB8..."`, `"who are the top LPers in pool ABC..."`, `"close all positions"`, etc. Only explicitly allowed Telegram user IDs can issue commands.
+
+When `paperEnabled=true` in `DRY_RUN`, read-only paper status commands are also available:
+- `/paper` — summary of paper trade counts and equity
+- `/paperwallet` — paper wallet balances
+- `/papertrade <id>` — inspect a specific paper trade by id
+
+---
+
+## Paper trading (DRY_RUN)
+
+Meridian experimental branch now supports a canonical paper trading engine for DRY_RUN mode.
+
+Key properties:
+- one canonical persisted state file: `paper-state.json`
+- explicit wallet snapshot, open trades, closed trades, and event ledger
+- paper capital is independent from the live wallet
+- DRY_RUN deploy/close flows use paper accounting when `paperEnabled=true`
+- paper mode is intentionally isolated from live relay execution paths
+
+Useful CLI commands:
+```bash
+node cli.js paper status
+node cli.js paper wallet
+node cli.js paper ledger --limit 20
+node cli.js paper init --balance 2
+node cli.js paper deposit --amount 0.5
+node cli.js paper withdraw --amount 0.25
+node cli.js paper reconcile
+node cli.js paper inspect --trade <id>
+node cli.js paper rejects
+node cli.js paper purge
+```
 
 ---
 

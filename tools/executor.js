@@ -31,6 +31,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import {
+  closePaperTrade,
+  openPaperTrade,
+  preflightPaperDeploy,
+} from "../paper-engine.js";
+import { estimatePaperReturn } from "../paper-evaluator.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -206,6 +212,17 @@ const toolMap = {
       publicApiKey: ["api", "publicApiKey"],
       agentMeridianApiUrl: ["api", "url"],
       lpAgentRelayEnabled: ["api", "lpAgentRelayEnabled"],
+      // paper
+      paperEnabled: ["paper", "enabled"],
+      paperStartingBalanceSol: ["paper", "startingBalanceSol"],
+      paperMaxOpenTrades: ["paper", "maxOpenTrades"],
+      paperEvaluationHorizonsMin: ["paper", "evaluationHorizonsMin"],
+      paperPrimaryHorizonMin: ["paper", "primaryHorizonMin"],
+      paperTakeProfitPct: ["paper", "takeProfitPct"],
+      paperStopLossPct: ["paper", "stopLossPct"],
+      paperAutoCloseAtMaxHorizon: ["paper", "autoCloseAtMaxHorizon"],
+      paperReserveGasBufferSol: ["paper", "reserveGasBufferSol"],
+      paperTelegramStatusEnabled: ["paper", "telegramStatusEnabled"],
     };
 
     const applied = {};
@@ -310,7 +327,85 @@ export async function executeTool(name, args) {
 
   // ─── Execute ──────────────────────────────
   try {
-    const result = await fn(args);
+    let result;
+    if (process.env.DRY_RUN === "true" && config.paper?.enabled && name === "deploy_position") {
+      result = await openPaperTrade({
+        filePath: undefined,
+        amountSol: args.amount_y ?? args.amount_sol,
+        poolAddress: args.pool_address,
+        poolName: args.pool_name || null,
+        baseMint: args.base_mint || null,
+        strategy: args.strategy || config.strategy.strategy,
+        reserveGasBufferSol: config.paper.reserveGasBufferSol,
+        maxOpenTrades: config.paper.maxOpenTrades,
+        entryPrice: args.entry_price ?? null,
+        entryPriceSource: args.entry_price_source || "provided",
+        entrySnapshot: {
+          active_bin: args.active_bin ?? null,
+          volatility: args.volatility ?? null,
+          fee_tvl_ratio: args.fee_tvl_ratio ?? null,
+          organic_score: args.organic_score ?? null,
+          bin_step: args.bin_step ?? null,
+        },
+        meta: {
+          bins_below: args.bins_below ?? null,
+          bins_above: args.bins_above ?? null,
+          base_fee: args.base_fee ?? null,
+          initial_value_usd: args.initial_value_usd ?? null,
+        },
+      });
+      if (result.ok) {
+        result = {
+          success: true,
+          dry_run: true,
+          paper: true,
+          position: result.trade.id,
+          paper_trade_id: result.trade.id,
+          pool: result.trade.pool_address,
+          pool_name: result.trade.pool_name,
+          strategy: result.trade.strategy,
+          amount_y: result.trade.allocated_sol,
+          amount_x: 0,
+          txs: [],
+          message: "DRY RUN — paper trade opened",
+        };
+      } else {
+        result = {
+          success: false,
+          dry_run: true,
+          paper: true,
+          error: result.reason,
+          reason_code: result.reason_code,
+          conflicts: result.conflicts,
+        };
+      }
+    } else if (process.env.DRY_RUN === "true" && config.paper?.enabled && name === "close_position") {
+      const close = await closePaperTrade({
+        filePath: undefined,
+        tradeId: args.position_address,
+        closeReasonCode: args.reason ? String(args.reason).toLowerCase().replace(/[^a-z0-9]+/g, "_") : "manual_close",
+        closeReasonDetail: args.reason || null,
+        finalReturnPct: args.final_return_pct ?? 0,
+      });
+      result = {
+        success: true,
+        dry_run: true,
+        paper: true,
+        position: close.closedTrade.id,
+        paper_trade_id: close.closedTrade.id,
+        pool: close.closedTrade.pool_address,
+        pool_name: close.closedTrade.pool_name,
+        txs: [],
+        close_txs: [],
+        claim_txs: [],
+        pnl_usd: close.closedTrade.realized_pnl_sol,
+        pnl_pct: close.closedTrade.final_return_pct,
+        base_mint: close.closedTrade.base_mint,
+        message: "DRY RUN — paper trade closed",
+      };
+    } else {
+      result = await fn(args);
+    }
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
 
@@ -403,10 +498,13 @@ async function runSafetyChecks(name, args) {
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache
       const positions = await getMyPositions({ force: true });
-      if (positions.total_positions >= config.risk.maxPositions) {
+      const maxOpenPositions = process.env.DRY_RUN === "true" && config.paper?.enabled
+        ? config.paper.maxOpenTrades
+        : config.risk.maxPositions;
+      if (positions.total_positions >= maxOpenPositions) {
         return {
           pass: false,
-          reason: `Max positions (${config.risk.maxPositions}) reached. Close a position first.`,
+          reason: `Max positions (${maxOpenPositions}) reached. Close a position first.`,
         };
       }
       const alreadyInPool = positions.positions.some(
@@ -453,6 +551,23 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `SOL amount ${amountY} exceeds maximum allowed per position (${config.risk.maxDeployAmount}).`,
         };
+      }
+
+      if (process.env.DRY_RUN === "true" && config.paper?.enabled) {
+        const preflight = preflightPaperDeploy({
+          amountSol: amountY,
+          poolAddress: args.pool_address,
+          baseMint: args.base_mint,
+          reserveGasBufferSol: config.paper.reserveGasBufferSol,
+          maxOpenTrades: config.paper.maxOpenTrades,
+        });
+        if (!preflight.ok) {
+          return {
+            pass: false,
+            reason: preflight.reason,
+          };
+        }
+        return { pass: true };
       }
 
       // Check SOL balance
