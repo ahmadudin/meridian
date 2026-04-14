@@ -141,7 +141,7 @@ Guidelines (only when user hasn't specified):
 - Bins: choose 35–69 for standard volatility; up to 350 for wide-range strategies. Max 1400 total.
 - Deposit: Can be single-sided (SOL only or Base only) or dual-sided.
 
-WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
+WARNING: In live mode this executes a real on-chain transaction. In DRY_RUN + paper mode it opens a simulated paper trade instead. Check DRY_RUN mode.`,
       parameters: {
         type: "object",
         properties: {
@@ -273,7 +273,7 @@ Use when:
 - Token shows danger signals (organic score drop, volume crash)
 - Rebalancing (close old + open new)
 
-WARNING: This executes a real on-chain transaction. Cannot be undone.`,
+WARNING: In live mode this executes a real on-chain transaction and cannot be undone. In DRY_RUN + paper mode it closes a simulated paper trade instead.`,
       parameters: {
         type: "object",
         properties: {

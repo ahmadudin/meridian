@@ -1729,7 +1729,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   (async () => {
     try {
       const startupStep3 = process.env.DRY_RUN === "true"
-        ? `3. Ignore wallet SOL threshold in dry run: get_top_candidates then simulate deploy ${DEPLOY} SOL.`
+        ? `3. Ignore wallet SOL threshold in dry run: get_top_candidates then use deploy_position for ${DEPLOY} SOL. If paper trading is enabled, report the result as a simulated paper trade open; otherwise report it as a dry-run simulation with no on-chain action and no persisted paper trade.`
         : `3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL.`;
       await agentLoop(`
 STARTUP CHECK
