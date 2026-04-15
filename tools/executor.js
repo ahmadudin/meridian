@@ -33,6 +33,7 @@ import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
 import {
   closePaperTrade,
+  getPaperTradeById,
   openPaperTrade,
   preflightPaperDeploy,
 } from "../paper-engine.js";
@@ -329,29 +330,43 @@ export async function executeTool(name, args) {
   try {
     let result;
     if (process.env.DRY_RUN === "true" && config.paper?.enabled && name === "deploy_position") {
+      let detail = null;
+      if (args.pool_address && (args.entry_price == null || args.active_bin == null || args.base_fee == null || args.bin_step == null)) {
+        try {
+          detail = await getPoolDetail({ pool_address: args.pool_address, timeframe: config.screening.timeframe });
+        } catch {
+          detail = null;
+        }
+      }
       result = await openPaperTrade({
         filePath: undefined,
         amountSol: args.amount_y ?? args.amount_sol,
         poolAddress: args.pool_address,
-        poolName: args.pool_name || null,
-        baseMint: args.base_mint || null,
+        poolName: args.pool_name || detail?.name || null,
+        baseMint: args.base_mint || detail?.token_x?.address || null,
         strategy: args.strategy || config.strategy.strategy,
         reserveGasBufferSol: config.paper.reserveGasBufferSol,
         maxOpenTrades: config.paper.maxOpenTrades,
-        entryPrice: args.entry_price ?? null,
-        entryPriceSource: args.entry_price_source || "provided",
+        entryPrice: args.entry_price ?? args.pool_price ?? args.active_price ?? detail?.pool_price ?? null,
+        entryPriceSource: args.entry_price != null
+          ? (args.entry_price_source || "provided")
+          : args.pool_price != null
+            ? "args.pool_price"
+            : args.active_price != null
+              ? "args.active_price"
+              : (detail?.pool_price != null ? "pool_detail.pool_price" : "unavailable"),
         entrySnapshot: {
-          active_bin: args.active_bin ?? null,
-          volatility: args.volatility ?? null,
-          fee_tvl_ratio: args.fee_tvl_ratio ?? null,
-          organic_score: args.organic_score ?? null,
-          bin_step: args.bin_step ?? null,
+          active_bin: args.active_bin ?? detail?.active_bin ?? null,
+          volatility: args.volatility ?? detail?.volatility ?? null,
+          fee_tvl_ratio: args.fee_tvl_ratio ?? detail?.fee_active_tvl_ratio ?? detail?.fee_tvl_ratio ?? null,
+          organic_score: args.organic_score ?? detail?.token_x?.organic_score ?? null,
+          bin_step: args.bin_step ?? detail?.dlmm_params?.bin_step ?? null,
         },
         meta: {
           bins_below: args.bins_below ?? null,
           bins_above: args.bins_above ?? null,
-          base_fee: args.base_fee ?? null,
-          initial_value_usd: args.initial_value_usd ?? null,
+          base_fee: args.base_fee ?? detail?.fee_pct ?? null,
+          initial_value_usd: args.initial_value_usd ?? detail?.active_tvl ?? detail?.tvl ?? null,
         },
       });
       if (result.ok) {
@@ -380,12 +395,28 @@ export async function executeTool(name, args) {
         };
       }
     } else if (process.env.DRY_RUN === "true" && config.paper?.enabled && name === "close_position") {
+      let trackedTrade = null;
+      try {
+        trackedTrade = getPaperTradeById({ tradeId: args.position_address }).trade;
+      } catch {
+        trackedTrade = null;
+      }
+      let closeDetail = null;
+      if (trackedTrade?.pool_address) {
+        try {
+          closeDetail = await getPoolDetail({ pool_address: trackedTrade.pool_address, timeframe: config.screening.timeframe });
+        } catch {
+          closeDetail = null;
+        }
+      }
       const close = await closePaperTrade({
         filePath: undefined,
         tradeId: args.position_address,
         closeReasonCode: args.reason ? String(args.reason).toLowerCase().replace(/[^a-z0-9]+/g, "_") : "manual_close",
         closeReasonDetail: args.reason || null,
         finalReturnPct: args.final_return_pct ?? 0,
+        closePrice: args.close_price ?? closeDetail?.pool_price ?? trackedTrade?.latest_mark?.price ?? null,
+        closeActiveBin: args.active_bin ?? closeDetail?.active_bin ?? trackedTrade?.latest_mark?.active_bin ?? null,
       });
       result = {
         success: true,

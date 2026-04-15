@@ -108,7 +108,7 @@ async function evaluatePaperState(now = Date.now()) {
       const { getPoolDetail } = await import("./tools/screening.js");
       const detail = await getPoolDetail({ pool_address: poolAddress });
       return {
-        price: detail?.active_price ?? detail?.price ?? detail?.current_price ?? null,
+        price: detail?.pool_price ?? detail?.active_price ?? detail?.price ?? detail?.current_price ?? null,
         active_bin: detail?.active_bin ?? null,
         volatility: detail?.volatility ?? null,
         fee_active_tvl_ratio: detail?.fee_active_tvl_ratio ?? detail?.fee_tvl_ratio ?? null,

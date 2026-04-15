@@ -287,6 +287,8 @@ export async function closePaperTrade({
   closeReasonCode,
   closeReasonDetail = null,
   finalReturnPct = null,
+  closePrice = null,
+  closeActiveBin = null,
   now = Date.now(),
 } = {}) {
   let closedTrade = null;
@@ -296,7 +298,16 @@ export async function closePaperTrade({
     const effectiveReturnPct = Number.isFinite(Number(finalReturnPct))
       ? Number(finalReturnPct)
       : Number(trade.latest_mark?.return_pct) || 0;
+    const effectiveClosePrice = closePrice ?? trade.latest_mark?.price ?? null;
+    const effectiveCloseActiveBin = closeActiveBin ?? trade.latest_mark?.active_bin ?? null;
     const realizedPnlSol = roundSol((Number(trade.allocated_sol) || 0) * (effectiveReturnPct / 100));
+    trade.latest_mark = {
+      marked_at: nowIso(now),
+      price: effectiveClosePrice,
+      active_bin: effectiveCloseActiveBin,
+      return_pct: effectiveReturnPct,
+      unrealized_pnl_sol: realizedPnlSol,
+    };
     delete state.open_trades[tradeId];
     closedTrade = {
       ...trade,
@@ -304,6 +315,12 @@ export async function closePaperTrade({
       closed_at: nowIso(now),
       close_reason_code: closeReasonCode,
       close_reason_detail: closeReasonDetail,
+      close: {
+        price: effectiveClosePrice,
+        active_bin: effectiveCloseActiveBin,
+        return_pct: effectiveReturnPct,
+        realized_pnl_sol: realizedPnlSol,
+      },
       realized_pnl_sol: realizedPnlSol,
       final_return_pct: effectiveReturnPct,
       outcome: effectiveReturnPct > 0 ? "win" : (effectiveReturnPct < 0 ? "loss" : "flat"),

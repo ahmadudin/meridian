@@ -82,9 +82,14 @@ async function main() {
     tradeId: opened.trade.id,
     closeReasonCode: "manual_close",
     finalReturnPct: 2,
+    closePrice: 1.5,
+    closeActiveBin: 42,
   });
   assert.equal(closeResult.ok, true);
   assert.equal(closeResult.closedTrade.status, "closed");
+  assert.equal(closeResult.closedTrade.close.price, 1.5);
+  assert.equal(closeResult.closedTrade.close.active_bin, 42);
+  assert.equal(closeResult.closedTrade.latest_mark.price, 1.5);
 
   const state = loadPaperState({ filePath });
   assert.equal(Object.keys(state.open_trades).length, 0);

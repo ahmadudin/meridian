@@ -108,13 +108,29 @@ export async function evaluatePaperTrades({
 
     if (primaryEval) {
       if ((Number(primaryEval.total_return_pct) || 0) >= takeProfitPct) {
-        await closePaperTrade({ filePath, tradeId: trade.id, closeReasonCode: "primary_take_profit", finalReturnPct: primaryEval.total_return_pct, now });
+        await closePaperTrade({
+          filePath,
+          tradeId: trade.id,
+          closeReasonCode: "primary_take_profit",
+          finalReturnPct: primaryEval.total_return_pct,
+          closePrice: snapshot?.price ?? null,
+          closeActiveBin: snapshot?.active_bin ?? null,
+          now,
+        });
         closed += 1;
         closedTradeIds.push(trade.id);
         continue;
       }
       if ((Number(primaryEval.total_return_pct) || 0) <= stopLossPct) {
-        await closePaperTrade({ filePath, tradeId: trade.id, closeReasonCode: "primary_stop_loss", finalReturnPct: primaryEval.total_return_pct, now });
+        await closePaperTrade({
+          filePath,
+          tradeId: trade.id,
+          closeReasonCode: "primary_stop_loss",
+          finalReturnPct: primaryEval.total_return_pct,
+          closePrice: snapshot?.price ?? null,
+          closeActiveBin: snapshot?.active_bin ?? null,
+          now,
+        });
         closed += 1;
         closedTradeIds.push(trade.id);
         continue;
@@ -122,7 +138,15 @@ export async function evaluatePaperTrades({
     }
 
     if (autoCloseAtMaxHorizon && maxEval) {
-      await closePaperTrade({ filePath, tradeId: trade.id, closeReasonCode: "max_horizon_reached", finalReturnPct: maxEval.total_return_pct, now });
+      await closePaperTrade({
+        filePath,
+        tradeId: trade.id,
+        closeReasonCode: "max_horizon_reached",
+        finalReturnPct: maxEval.total_return_pct,
+        closePrice: snapshot?.price ?? null,
+        closeActiveBin: snapshot?.active_bin ?? null,
+        now,
+      });
       closed += 1;
       closedTradeIds.push(trade.id);
     }
