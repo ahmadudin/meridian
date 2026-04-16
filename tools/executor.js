@@ -11,7 +11,7 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordPerformance } from '../lessons.js';
 import { setPositionInstruction } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
@@ -423,17 +423,40 @@ export async function executeTool(name, args) {
         dry_run: true,
         paper: true,
         position: close.closedTrade.id,
-        paper_trade_id: close.closedTrade.id,
+        paper_closed: true,
         pool: close.closedTrade.pool_address,
         pool_name: close.closedTrade.pool_name,
-        txs: [],
-        close_txs: [],
-        claim_txs: [],
-        pnl_usd: close.closedTrade.realized_pnl_sol,
-        pnl_pct: close.closedTrade.final_return_pct,
-        base_mint: close.closedTrade.base_mint,
+        strategy: close.closedTrade.strategy ?? "spot",
+        bin_step: close.closedTrade.meta?.bin_step ?? null,
+        volatility: close.closedTrade.meta?.volatility ?? null,
+        allocated_sol: close.closedTrade.allocated_sol ?? null,
+        fees_earned_sol: close.closedTrade.meta?.fees_earned_sol ?? 0,
+        entry_price: close.closedTrade.entry?.price ?? null,
+        close_price: close.closedTrade.close?.price ?? null,
+        deployed_at: close.closedTrade.opened_at ?? null,
+        minutes_held: close.closedTrade.meta?.minutes_held ?? 0,
+        minutes_in_range: close.closedTrade.meta?.minutes_in_range ?? 0,
         message: "DRY RUN — paper trade closed",
       };
+
+      // Feed paper trade outcome into the learning system
+      void recordPerformance({
+        pool: close.closedTrade.pool_address,
+        pool_name: close.closedTrade.pool_name,
+        base_mint: close.closedTrade.base_mint,
+        strategy: close.closedTrade.strategy ?? "spot",
+        bin_step: close.closedTrade.meta?.bin_step ?? null,
+        volatility: close.closedTrade.meta?.volatility ?? null,
+        initial_value_usd: (close.closedTrade.allocated_sol ?? 0) * (close.closedTrade.meta?.sol_price ?? 20),
+        final_value_usd: (close.closedTrade.allocated_sol ?? 0) * (1 + (close.closedTrade.final_return_pct ?? 0) / 100) * (close.closedTrade.meta?.sol_price ?? 20),
+        fees_earned_usd: (close.closedTrade.meta?.fees_earned_sol ?? 0) * (close.closedTrade.meta?.sol_price ?? 20),
+        amount_sol: close.closedTrade.allocated_sol ?? 0,
+        close_reason: close.closedTrade.close_reason_detail ?? close.closedTrade.close_reason_code ?? "paper_close",
+        deployed_at: close.closedTrade.opened_at ?? null,
+        minutes_held: close.closedTrade.meta?.minutes_held ?? 0,
+        minutes_in_range: close.closedTrade.meta?.minutes_in_range ?? 0,
+        paper_trade: true,
+      }).catch(e => log("executor_warn", `recordPerformance for paper trade failed: ${e.message}`));
     } else {
       result = await fn(args);
     }
@@ -460,8 +483,8 @@ export async function executeTool(name, args) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
         }
-        // Auto-swap base token back to SOL unless user said to hold
-        if (!args.skip_swap && result.base_mint) {
+        // Auto-swap base token back to SOL unless user said to hold or this was a paper close
+        if (!args.skip_swap && result.base_mint && !result.paper_closed) {
           try {
             const balances = await getWalletBalances({});
             const token = balances.tokens?.find(t => t.mint === result.base_mint);
@@ -538,25 +561,38 @@ async function runSafetyChecks(name, args) {
           reason: `Max positions (${maxOpenPositions}) reached. Close a position first.`,
         };
       }
-      const alreadyInPool = positions.positions.some(
-        (p) => p.pool === args.pool_address
-      );
+
+      // Collect pool/base_mint from live positions
+      const livePoolSet    = new Set(positions.positions.map((p) => p.pool));
+      const liveMintSet   = new Set(positions.positions.map((p) => p.base_mint).filter(Boolean));
+
+      // Also collect open paper trades when paper mode is active
+      let paperPoolSet = new Set();
+      let paperMintSet = new Set();
+      if (process.env.DRY_RUN === "true" && config.paper?.enabled) {
+        try {
+          const { getPaperStatus } = await import("../paper-engine.js");
+          const paperState = getPaperStatus();
+          paperPoolSet = new Set(paperState.open_trades.map((t) => t.pool_address).filter(Boolean));
+          paperMintSet = new Set(paperState.open_trades.map((t) => t.base_mint).filter(Boolean));
+        } catch { /* paper engine unavailable — skip */ }
+      }
+
+      const alreadyInPool = livePoolSet.has(args.pool_address) || paperPoolSet.has(args.pool_address);
       if (alreadyInPool) {
         return {
           pass: false,
-          reason: `Already have an open position in pool ${args.pool_address}. Cannot open duplicate.`,
+          reason: `Already have an open position in pool ${args.pool_address} (live or paper). Cannot open duplicate.`,
         };
       }
 
       // Block same base token across different pools
       if (args.base_mint) {
-        const alreadyHasMint = positions.positions.some(
-          (p) => p.base_mint === args.base_mint
-        );
+        const alreadyHasMint = liveMintSet.has(args.base_mint) || paperMintSet.has(args.base_mint);
         if (alreadyHasMint) {
           return {
             pass: false,
-            reason: `Already holding base token ${args.base_mint} in another pool. One position per token only.`,
+            reason: `Already holding base token ${args.base_mint} in another pool (live or paper). One position per token only.`,
           };
         }
       }

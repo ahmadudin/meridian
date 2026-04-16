@@ -1,5 +1,6 @@
 import { closePaperTrade, markPaperTrade } from "./paper-engine.js";
 import { loadPaperState } from "./paper-state.js";
+import { log } from "./logger.js";
 
 function roundPct(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
@@ -65,39 +66,54 @@ export async function evaluatePaperTrades({
       snapshot = await priceFetcher(trade.pool_address, trade);
     } catch (error) {
       errors += 1;
+      log("paper_eval_warn", `Price fetch failed for pool ${trade.pool_address}: ${error.message}`);
       continue;
     }
 
     for (const horizonMin of dueHorizons) {
-      const estimate = estimatePaperReturn({
-        trade,
-        currentPrice: snapshot?.price,
-        snapshot,
-        horizonMin,
-      });
-      const evaluation = {
-        evaluated_at: new Date(now).toISOString(),
-        horizon_min: horizonMin,
-        price: snapshot?.price ?? null,
-        active_bin: snapshot?.active_bin ?? null,
-        volatility: snapshot?.volatility ?? null,
-        fee_active_tvl_ratio: snapshot?.fee_active_tvl_ratio ?? null,
-        price_return_pct: estimate.price_return_pct,
-        directional_return_pct: estimate.directional_return_pct,
-        fee_return_pct: estimate.fee_return_pct,
-        il_proxy_pct: estimate.il_proxy_pct,
-        total_return_pct: estimate.total_return_pct,
-      };
-      await markPaperTrade({
-        filePath,
-        tradeId: trade.id,
-        price: snapshot?.price ?? null,
-        activeBin: snapshot?.active_bin ?? null,
-        returnPct: estimate.total_return_pct,
-        unrealizedPnlSol: estimate.unrealized_pnl_sol,
-        evaluation,
-        now,
-      });
+      let evaluation;
+      let estimate;
+      try {
+        estimate = estimatePaperReturn({
+          trade,
+          currentPrice: snapshot?.price,
+          snapshot,
+          horizonMin,
+        });
+        evaluation = {
+          evaluated_at: new Date(now).toISOString(),
+          horizon_min: horizonMin,
+          price: snapshot?.price ?? null,
+          active_bin: snapshot?.active_bin ?? null,
+          volatility: snapshot?.volatility ?? null,
+          fee_active_tvl_ratio: snapshot?.fee_active_tvl_ratio ?? null,
+          price_return_pct: estimate.price_return_pct,
+          directional_return_pct: estimate.directional_return_pct,
+          fee_return_pct: estimate.fee_return_pct,
+          il_proxy_pct: estimate.il_proxy_pct,
+          total_return_pct: estimate.total_return_pct,
+        };
+      } catch (error) {
+        errors += 1;
+        log("paper_eval_warn", `estimatePaperReturn failed for trade ${trade.id} horizon ${horizonMin}: ${error.message}`);
+        continue;
+      }
+      try {
+        await markPaperTrade({
+          filePath,
+          tradeId: trade.id,
+          price: snapshot?.price ?? null,
+          activeBin: snapshot?.active_bin ?? null,
+          returnPct: estimate.total_return_pct,
+          unrealizedPnlSol: estimate.unrealized_pnl_sol,
+          evaluation,
+          now,
+        });
+      } catch (error) {
+        errors += 1;
+        log("paper_eval_warn", `markPaperTrade failed for trade ${trade.id}: ${error.message}`);
+        continue;
+      }
       evaluated += 1;
     }
 
