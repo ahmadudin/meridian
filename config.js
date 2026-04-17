@@ -170,6 +170,10 @@ export const config = {
     autoCloseAtMaxHorizon: u.paperAutoCloseAtMaxHorizon ?? true,
     reserveGasBufferSol: u.paperReserveGasBufferSol ?? 0.2,
     telegramStatusEnabled: u.paperTelegramStatusEnabled ?? false,
+    outOfRangeWaitMinutes: u.paperOutOfRangeWaitMinutes ?? u.outOfRangeWaitMinutes ?? 30,
+    outOfRangeBinsToClose: u.paperOutOfRangeBinsToClose ?? u.outOfRangeBinsToClose ?? 10,
+    minFeePerTvl24h: u.paperMinFeePerTvl24h ?? u.minFeePerTvl24h ?? 7,
+    minAgeBeforeYieldCheck: u.paperMinAgeBeforeYieldCheck ?? u.minAgeBeforeYieldCheck ?? 60,
   },
 };
 

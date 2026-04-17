@@ -116,6 +116,12 @@ Returns paper wallet summary.
 ### meridian paper ledger [--limit 50]
 Returns recent paper ledger events.
 
+### meridian paper comparison-log [--limit 50]
+Returns recent comparison logs between paper predictions and actuals.
+
+### meridian paper calibration [show | set <json>]
+Shows or sets paper calibration coefficients.
+
 ### meridian paper init --balance <sol>
 Initializes/reset paper state with a starting balance.
 
@@ -399,6 +405,32 @@ switch (subcommand) {
     }
     if (sub2 === "ledger") {
       out(getPaperLedger({ limit: parseInt(flags.limit || "50", 10) }));
+      break;
+    }
+    if (sub2 === "comparison-log") {
+      const { readComparisonLog } = await import("./paper-comparison-log.js");
+      out(readComparisonLog({ limit: parseInt(flags.limit || "50", 10) }));
+      break;
+    }
+    if (sub2 === "calibration") {
+      const { loadCalibration, saveCalibration } = await import("./paper-calibration.js");
+      const action = argv.filter(a => !a.startsWith("-"))[2];
+      if (!action || action === "show") {
+        out(loadCalibration({ force: true }));
+      } else if (action === "set") {
+        const rawJson = argv.filter(a => !a.startsWith("-")).slice(3).join(" ");
+        if (!rawJson) die("Usage: meridian paper calibration set '{...}'");
+        try {
+          const parsed = JSON.parse(rawJson);
+          const current = loadCalibration({ force: true });
+          const merged = { ...current.coefficients, ...parsed };
+          out(saveCalibration({ data: { coefficients: merged } }));
+        } catch (e) {
+          die("Invalid JSON passed to calibration set");
+        }
+      } else {
+        die("Unknown calibration action. Use show, set");
+      }
       break;
     }
     if (sub2 === "init" || sub2 === "reset") {

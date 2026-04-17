@@ -1,5 +1,7 @@
 import { closePaperTrade, markPaperTrade } from "./paper-engine.js";
 import { loadPaperState } from "./paper-state.js";
+import { appendComparisonLog } from "./paper-comparison-log.js";
+import { loadCalibration } from "./paper-calibration.js";
 import { log } from "./logger.js";
 
 function roundPct(value) {
@@ -10,17 +12,37 @@ function roundSol(value) {
   return Math.round((Number(value) || 0) * 1e8) / 1e8;
 }
 
-export function estimatePaperReturn({ trade, currentPrice, snapshot = {}, horizonMin = null } = {}) {
+export function estimatePaperReturn({ trade, currentPrice, snapshot = {}, horizonMin = null, now = Date.now() } = {}) {
   const entryPrice = Number(trade?.entry?.price);
   const nextPrice = Number(currentPrice);
   const allocatedSol = Number(trade?.allocated_sol) || 0;
+  
+  const { coefficients: cal } = loadCalibration();
+  
   const priceReturnPct = entryPrice > 0 && Number.isFinite(nextPrice)
     ? ((nextPrice - entryPrice) / entryPrice) * 100
     : 0;
-  const directionalReturnPct = priceReturnPct * 0.35;
-  const feeReturnPct = Number(snapshot?.fee_return_pct)
-    || Math.max(0, Number(snapshot?.fee_active_tvl_ratio || 0)) * Math.max(1, Number(horizonMin || 0) / 60) * 0.25;
-  const ilProxyPct = Number(snapshot?.il_proxy_pct) || 0;
+
+  let directionalReturnPct = priceReturnPct * cal.alpha_directional;
+  
+  const openedMs = Date.parse(trade?.opened_at) || now;
+  const ageMinutes = horizonMin || Math.max(0, Math.floor((now - openedMs) / 60_000));
+  const oorMinutes = trade?.oor_state?.minutes_out_of_range || 0;
+  const inRangeRatio = ageMinutes > 0 ? Math.max(0, ageMinutes - oorMinutes) / ageMinutes : 1.0;
+  
+  const feeReturnPct = snapshot?.fee_return_pct !== undefined
+    ? Number(snapshot.fee_return_pct)
+    : Math.max(0, Number(snapshot?.fee_active_tvl_ratio || 0)) * Math.max(1, ageMinutes / 60) * cal.beta_fee * inRangeRatio;
+    
+  // Estimate IL proxy from config / DLMM concentration if not provided by fetcher
+  // IL typically grows with square of price change and concentration factor
+  const concentrationProxy = trade?.meta?.bin_step ? 1.0 / trade.meta.bin_step : cal.concentration_factor_base;
+  const computedIlProxy = priceReturnPct * priceReturnPct * cal.gamma_il * concentrationProxy;
+  
+  const ilProxyPct = snapshot?.il_proxy_pct !== undefined
+    ? Number(snapshot.il_proxy_pct)
+    : computedIlProxy;
+  
   const totalReturnPct = directionalReturnPct + feeReturnPct + ilProxyPct;
   const unrealizedPnlSol = allocatedSol * (totalReturnPct / 100);
   return {
@@ -41,6 +63,10 @@ export async function evaluatePaperTrades({
   takeProfitPct = 3,
   stopLossPct = -3,
   autoCloseAtMaxHorizon = true,
+  outOfRangeWaitMinutes = 30,
+  outOfRangeBinsToClose = 10,
+  minFeePerTvl24h = 7,
+  minAgeBeforeYieldCheck = 60,
   priceFetcher,
 } = {}) {
   const state = loadPaperState({ filePath });
@@ -58,9 +84,9 @@ export async function evaluatePaperTrades({
 
   for (const trade of openTrades) {
     const openedMs = Date.parse(trade.opened_at || new Date(now).toISOString()) || now;
-    const dueHorizons = uniqueHorizons.filter((h) => now - openedMs >= h * 60_000 && !trade.evaluations?.[String(h)]);
-    if (!dueHorizons.length) continue;
+    const ageMinutes = Math.max(0, Math.floor((now - openedMs) / 60_000));
 
+    // PASS 1: Operational close check (OOR, Yield, TP/SL on current estimate)
     let snapshot;
     try {
       snapshot = await priceFetcher(trade.pool_address, trade);
@@ -70,101 +96,176 @@ export async function evaluatePaperTrades({
       continue;
     }
 
-    for (const horizonMin of dueHorizons) {
-      let evaluation;
-      let estimate;
-      try {
-        estimate = estimatePaperReturn({
-          trade,
-          currentPrice: snapshot?.price,
-          snapshot,
-          horizonMin,
-        });
-        evaluation = {
-          evaluated_at: new Date(now).toISOString(),
-          horizon_min: horizonMin,
-          price: snapshot?.price ?? null,
-          active_bin: snapshot?.active_bin ?? null,
-          volatility: snapshot?.volatility ?? null,
-          fee_active_tvl_ratio: snapshot?.fee_active_tvl_ratio ?? null,
-          price_return_pct: estimate.price_return_pct,
-          directional_return_pct: estimate.directional_return_pct,
-          fee_return_pct: estimate.fee_return_pct,
-          il_proxy_pct: estimate.il_proxy_pct,
-          total_return_pct: estimate.total_return_pct,
-        };
-      } catch (error) {
-        errors += 1;
-        log("paper_eval_warn", `estimatePaperReturn failed for trade ${trade.id} horizon ${horizonMin}: ${error.message}`);
-        continue;
-      }
-      try {
-        await markPaperTrade({
-          filePath,
-          tradeId: trade.id,
-          price: snapshot?.price ?? null,
-          activeBin: snapshot?.active_bin ?? null,
-          returnPct: estimate.total_return_pct,
-          unrealizedPnlSol: estimate.unrealized_pnl_sol,
-          evaluation,
-          now,
-        });
-      } catch (error) {
-        errors += 1;
-        log("paper_eval_warn", `markPaperTrade failed for trade ${trade.id}: ${error.message}`);
-        continue;
-      }
-      evaluated += 1;
-    }
-
-    const refreshed = loadPaperState({ filePath }).open_trades?.[trade.id];
-    if (!refreshed) continue;
-    const primaryEval = refreshed.evaluations?.[String(primaryHorizonMin)] || null;
-    const maxEval = refreshed.evaluations?.[String(maxHorizon)] || null;
-
-    if (primaryEval) {
-      if ((Number(primaryEval.total_return_pct) || 0) >= takeProfitPct) {
-        await closePaperTrade({
-          filePath,
-          tradeId: trade.id,
-          closeReasonCode: "primary_take_profit",
-          finalReturnPct: primaryEval.total_return_pct,
-          closePrice: snapshot?.price ?? null,
-          closeActiveBin: snapshot?.active_bin ?? null,
-          now,
-        });
-        closed += 1;
-        closedTradeIds.push(trade.id);
-        continue;
-      }
-      if ((Number(primaryEval.total_return_pct) || 0) <= stopLossPct) {
-        await closePaperTrade({
-          filePath,
-          tradeId: trade.id,
-          closeReasonCode: "primary_stop_loss",
-          finalReturnPct: primaryEval.total_return_pct,
-          closePrice: snapshot?.price ?? null,
-          closeActiveBin: snapshot?.active_bin ?? null,
-          now,
-        });
-        closed += 1;
-        closedTradeIds.push(trade.id);
-        continue;
+    // Update OOR state locally before estimate (needs to be saved during mark)
+    if (trade.bin_range?.upper != null && snapshot?.active_bin != null) {
+      if (snapshot.active_bin > trade.bin_range.upper) {
+        if (!trade.oor_state?.out_of_range_since) {
+          trade.oor_state = {
+            out_of_range_since: new Date(now).toISOString(),
+            minutes_out_of_range: 0,
+          };
+        } else {
+          trade.oor_state.minutes_out_of_range = Math.max(0, Math.floor((now - Date.parse(trade.oor_state.out_of_range_since)) / 60_000));
+        }
+      } else {
+        trade.oor_state = { out_of_range_since: null, minutes_out_of_range: 0 };
       }
     }
 
-    if (autoCloseAtMaxHorizon && maxEval) {
+    // Evaluate instantaneous return
+    let currentEstimate;
+    try {
+      currentEstimate = estimatePaperReturn({
+        trade,
+        currentPrice: snapshot?.price,
+        snapshot,
+        horizonMin: null,
+        now,
+      });
+    } catch (error) {
+      errors += 1;
+      log("paper_eval_warn", `estimatePaperReturn failed for trade ${trade.id}: ${error.message}`);
+      continue;
+    }
+
+    // Force an update to save local changes (OOR) + instantaneous mark return
+    try {
+      await markPaperTrade({
+        filePath,
+        tradeId: trade.id,
+        price: snapshot?.price ?? null,
+        activeBin: snapshot?.active_bin ?? null,
+        returnPct: currentEstimate.total_return_pct,
+        unrealizedPnlSol: currentEstimate.unrealized_pnl_sol,
+        evaluation: null,
+        oorState: trade.oor_state,
+        now,
+      });
+      // Important to sync local object with actual saved OOR state
+      const refreshedState = loadPaperState({ filePath });
+      if (refreshedState.open_trades?.[trade.id]) {
+         Object.assign(trade.oor_state || {}, refreshedState.open_trades[trade.id].oor_state);
+      }
+    } catch (error) {
+      errors += 1;
+      log("paper_eval_warn", `markPaperTrade failed for trade ${trade.id}: ${error.message}`);
+      continue;
+    }
+
+    const markReturnPct = Number(currentEstimate.total_return_pct) || 0;
+    let closeReason = null;
+
+    if (markReturnPct <= stopLossPct) {
+      closeReason = "stop_loss";
+    } else if (markReturnPct >= takeProfitPct) {
+      closeReason = "take_profit";
+    } else if (trade.bin_range?.upper != null && snapshot?.active_bin != null && snapshot.active_bin > trade.bin_range.upper + outOfRangeBinsToClose) {
+      closeReason = "pumped_far_above_range";
+    } else if (trade.oor_state?.minutes_out_of_range >= outOfRangeWaitMinutes) {
+      closeReason = "oor";
+    } else if (snapshot?.fee_per_tvl_24h != null && snapshot.fee_per_tvl_24h < minFeePerTvl24h && ageMinutes >= minAgeBeforeYieldCheck) {
+      closeReason = "low_yield";
+    }
+
+    if (closeReason) {
+      appendComparisonLog({
+        trade,
+        event: "close",
+        prediction: currentEstimate,
+        snapshot,
+        closeReason,
+        now,
+      });
       await closePaperTrade({
         filePath,
         tradeId: trade.id,
-        closeReasonCode: "max_horizon_reached",
-        finalReturnPct: maxEval.total_return_pct,
+        closeReasonCode: closeReason,
+        finalReturnPct: markReturnPct,
         closePrice: snapshot?.price ?? null,
         closeActiveBin: snapshot?.active_bin ?? null,
         now,
       });
       closed += 1;
       closedTradeIds.push(trade.id);
+      continue; // Skip horizons if closed
+    }
+
+    // PASS 2: Horizon snapshots
+    const dueHorizons = uniqueHorizons.filter((h) => ageMinutes >= h && !trade.evaluations?.[String(h)]);
+    if (dueHorizons.length) {
+      for (const horizonMin of dueHorizons) {
+        let evaluation;
+        let estimate;
+        try {
+          estimate = estimatePaperReturn({
+            trade,
+            currentPrice: snapshot?.price,
+            snapshot,
+            horizonMin,
+            now,
+          });
+          evaluation = {
+            evaluated_at: new Date(now).toISOString(),
+            horizon_min: horizonMin,
+            price: snapshot?.price ?? null,
+            active_bin: snapshot?.active_bin ?? null,
+            volatility: snapshot?.volatility ?? null,
+            fee_active_tvl_ratio: snapshot?.fee_active_tvl_ratio ?? null,
+            price_return_pct: estimate.price_return_pct,
+            directional_return_pct: estimate.directional_return_pct,
+            fee_return_pct: estimate.fee_return_pct,
+            il_proxy_pct: estimate.il_proxy_pct,
+            total_return_pct: estimate.total_return_pct,
+          };
+        } catch (error) {
+          errors += 1;
+          log("paper_eval_warn", `estimatePaperReturn horizon failed for trade ${trade.id} horizon ${horizonMin}: ${error.message}`);
+          continue;
+        }
+        try {
+          await markPaperTrade({
+            filePath,
+            tradeId: trade.id,
+            price: snapshot?.price ?? null,
+            activeBin: snapshot?.active_bin ?? null,
+            returnPct: estimate.total_return_pct, // Latest tick return used
+            unrealizedPnlSol: estimate.unrealized_pnl_sol, // Latest tick return used
+            evaluation,
+            oorState: trade.oor_state,
+            now,
+          });
+          evaluated += 1;
+        } catch (error) {
+          errors += 1;
+          log("paper_eval_warn", `markPaperTrade horizon failed for trade ${trade.id}: ${error.message}`);
+          continue;
+        }
+      }
+    }
+
+    if (autoCloseAtMaxHorizon) {
+      const refreshed = loadPaperState({ filePath }).open_trades?.[trade.id];
+      if (refreshed && refreshed.evaluations?.[String(maxHorizon)]) {
+        appendComparisonLog({
+          trade,
+          event: "close",
+          prediction: refreshed.evaluations[String(maxHorizon)],
+          snapshot,
+          closeReason: "max_horizon_reached",
+          now,
+        });
+        await closePaperTrade({
+          filePath,
+          tradeId: trade.id,
+          closeReasonCode: "max_horizon_reached",
+          finalReturnPct: refreshed.evaluations[String(maxHorizon)].total_return_pct,
+          closePrice: snapshot?.price ?? null,
+          closeActiveBin: snapshot?.active_bin ?? null,
+          now,
+        });
+        closed += 1;
+        closedTradeIds.push(trade.id);
+      }
     }
   }
 

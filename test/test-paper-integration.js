@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
+import { fileURLToPath } from "url";
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "paper-integration-"));
@@ -89,8 +90,9 @@ async function main() {
   const closedTrade = getPaperTradeById({ tradeId: deploy.position }).trade;
   assert.equal(closedTrade.close.price, 1.2345);
 
+  const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
   const walletJson = execFileSync("node", ["cli.js", "paper", "wallet"], {
-    cwd: path.resolve("/workspace/meridian"),
+    cwd: projectRoot,
     env: { ...process.env, PAPER_STATE_FILE: filePath, DRY_RUN: "true" },
     encoding: "utf8",
   });

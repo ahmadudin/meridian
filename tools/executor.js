@@ -386,6 +386,8 @@ export async function executeTool(name, args) {
           organic_score: args.organic_score ?? detail?.token_x?.organic_score ?? null,
           bin_step: args.bin_step ?? detail?.dlmm_params?.bin_step ?? null,
         },
+        lowerBin: resolvedActiveBin != null && args.bins_below != null ? resolvedActiveBin - args.bins_below : null,
+        upperBin: resolvedActiveBin != null ? resolvedActiveBin + (args.bins_above || 0) : null,
         meta: {
           bins_below: args.bins_below ?? null,
           bins_above: args.bins_above ?? null,

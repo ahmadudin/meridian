@@ -192,6 +192,8 @@ export async function openPaperTrade({
   entryPrice = null,
   entryPriceSource = "provided",
   entrySnapshot = null,
+  lowerBin = null,
+  upperBin = null,
   meta = {},
   now = Date.now(),
 } = {}) {
@@ -244,6 +246,14 @@ export async function openPaperTrade({
     ...keys,
     strategy,
     allocated_sol: roundSol(amountSol),
+    bin_range: {
+      lower: lowerBin,
+      upper: upperBin,
+    },
+    oor_state: {
+      out_of_range_since: null,
+      minutes_out_of_range: 0,
+    },
     entry: {
       price: entryPrice,
       price_source: entryPriceSource,
@@ -288,6 +298,7 @@ export async function markPaperTrade({
   returnPct = 0,
   unrealizedPnlSol = 0,
   evaluation = null,
+  oorState = null,
   now = Date.now(),
 } = {}) {
   let markedTrade = null;
@@ -304,6 +315,9 @@ export async function markPaperTrade({
     if (evaluation?.horizon_min != null) {
       trade.evaluations ||= {};
       trade.evaluations[String(evaluation.horizon_min)] = clone(evaluation);
+    }
+    if (oorState != null) {
+      trade.oor_state = clone(oorState);
     }
     state.events.push(makeEvent({
       now,
@@ -465,10 +479,10 @@ export function getPaperPositions({ filePath } = {}) {
     pool: trade.pool_address,
     pair: trade.pool_name || trade.pool_address || "paper trade",
     base_mint: trade.base_mint,
-    lower_bin: null,
-    upper_bin: null,
+    lower_bin: trade.bin_range?.lower ?? null,
+    upper_bin: trade.bin_range?.upper ?? null,
     active_bin: trade.latest_mark?.active_bin ?? null,
-    in_range: true,
+    in_range: trade.oor_state?.out_of_range_since == null,
     unclaimed_fees_usd: null,
     total_value_usd: roundSol((Number(trade.allocated_sol) || 0) + (Number(trade.latest_mark?.unrealized_pnl_sol) || 0)),
     total_value_true_usd: null,
@@ -483,7 +497,7 @@ export function getPaperPositions({ filePath } = {}) {
     unclaimed_fees_true_usd: null,
     fee_per_tvl_24h: null,
     age_minutes: Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 60000)),
-    minutes_out_of_range: 0,
+    minutes_out_of_range: trade.oor_state?.minutes_out_of_range ?? 0,
     instruction: null,
     paper_trade: true,
     allocated_sol: trade.allocated_sol,

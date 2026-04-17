@@ -104,6 +104,10 @@ async function evaluatePaperState(now = Date.now()) {
     takeProfitPct: config.paper.takeProfitPct,
     stopLossPct: config.paper.stopLossPct,
     autoCloseAtMaxHorizon: config.paper.autoCloseAtMaxHorizon,
+    outOfRangeWaitMinutes: config.paper.outOfRangeWaitMinutes,
+    outOfRangeBinsToClose: config.paper.outOfRangeBinsToClose,
+    minFeePerTvl24h: config.paper.minFeePerTvl24h,
+    minAgeBeforeYieldCheck: config.paper.minAgeBeforeYieldCheck,
     priceFetcher: async (poolAddress) => {
       const { getPoolDetail } = await import("./tools/screening.js");
       const detail = await getPoolDetail({ pool_address: poolAddress });
@@ -112,6 +116,7 @@ async function evaluatePaperState(now = Date.now()) {
         active_bin: detail?.active_bin ?? null,
         volatility: detail?.volatility ?? null,
         fee_active_tvl_ratio: detail?.fee_active_tvl_ratio ?? detail?.fee_tvl_ratio ?? null,
+        fee_per_tvl_24h: detail?.fee_per_tvl_24h ?? detail?.fee_tvl_ratio ?? null,
       };
     },
   });
