@@ -90,7 +90,7 @@ async function main() {
   assert.equal(closedTrade.close.price, 1.2345);
 
   const walletJson = execFileSync("node", ["cli.js", "paper", "wallet"], {
-    cwd: path.resolve("/workspace/meridian"),
+    cwd: process.cwd(),
     env: { ...process.env, PAPER_STATE_FILE: filePath, DRY_RUN: "true" },
     encoding: "utf8",
   });
