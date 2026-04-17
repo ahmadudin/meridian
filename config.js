@@ -17,39 +17,9 @@ if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
-if (u.openaiApiKey) process.env.OPENAI_API_KEY  ||= u.openaiApiKey;
 if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
-
-// ─── LLM Provider Auto-Detection ────────────────────────
-// Priority: custom (LLM_BASE_URL) > openai (OPENAI_API_KEY) > openrouter (default)
-const llmProvider = (() => {
-  if (u.llmBaseUrl || process.env.LLM_BASE_URL) return "custom";
-  if (u.openaiApiKey || process.env.OPENAI_API_KEY) return "openai";
-  return "openrouter";
-})();
-
-const LLM_PROVIDERS = {
-  openai: {
-    baseURL: "https://api.openai.com/v1",
-    apiKey: u.openaiApiKey || process.env.OPENAI_API_KEY,
-    defaultModel: "gpt5.4-mini",
-  },
-  openrouter: {
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
-    defaultModel: "openrouter/healer-alpha",
-  },
-  custom: {
-    baseURL: u.llmBaseUrl || process.env.LLM_BASE_URL,
-    apiKey: u.llmApiKey || process.env.LLM_API_KEY,
-    defaultModel: process.env.LLM_MODEL || "default",
-  },
-};
-
-export const llmProviderConfig = LLM_PROVIDERS[llmProvider];
-export { llmProvider };
 
 const indicatorUserConfig = u.chartIndicators ?? {};
 
@@ -132,13 +102,12 @@ export const config = {
 
   // ─── LLM Settings ──────────────────────
   llm: {
-    provider:    llmProvider,
     temperature: u.temperature ?? 0.373,
     maxTokens:   u.maxTokens   ?? 4096,
     maxSteps:    u.maxSteps    ?? 20,
-    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? llmProviderConfig.defaultModel,
-    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? (llmProvider === "openrouter" ? "openrouter/hunter-alpha" : llmProviderConfig.defaultModel),
-    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? llmProviderConfig.defaultModel,
+    managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
+    screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "openrouter/hunter-alpha",
+    generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "openrouter/healer-alpha",
   },
 
   // ─── Darwinian Signal Weighting ───────

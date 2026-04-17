@@ -20,9 +20,6 @@ decision-log.json
 hivemind-cache.json
 signal-weights.json
 paper-state.json
-.auth-token.json
-paper-calibration.json
-paper-comparison-log.json
 
 # Logs
 logs/

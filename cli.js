@@ -445,61 +445,6 @@ switch (subcommand) {
     break;
   }
 
-  // ── login ────────────────────────────────────────────────────────
-  case "login": {
-    const { exchangeCodeForToken, loadAuthToken, clearAuthToken } = await import("./auth.js");
-
-    if (sub2 === "status") {
-      const token = loadAuthToken();
-      out(token
-        ? { logged_in: true, provider: token.provider, expires_at: token.expires_at, expired: !!token.expired }
-        : { logged_in: false });
-      break;
-    }
-    if (sub2 === "logout") {
-      clearAuthToken();
-      out({ logged_out: true });
-      break;
-    }
-
-    // Interactive OAuth flow
-    const provider = flags.provider || "openai";
-    const clientId = flags["client-id"] || process.env.OPENAI_CLIENT_ID;
-    if (!clientId) die("--client-id or OPENAI_CLIENT_ID required");
-
-    const redirectUri = "http://localhost:19284/callback";
-    const authUrl = `https://auth.openai.com/authorize?client_id=${encodeURIComponent(clientId)}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=chat.completions+models.read`;
-    console.log(`\nOpen this URL in your browser:\n\n  ${authUrl}\n`);
-
-    // Start local HTTP server to catch the callback
-    const http = await import("http");
-    const url = await import("url");
-    const server = http.createServer(async (req, res) => {
-      const parsed = url.parse(req.url, true);
-      if (parsed.pathname === "/callback" && parsed.query.code) {
-        try {
-          const token = await exchangeCodeForToken({
-            code: parsed.query.code,
-            clientId,
-            clientSecret: flags["client-secret"] || process.env.OPENAI_CLIENT_SECRET || "",
-            redirectUri,
-            provider,
-          });
-          res.writeHead(200, { "Content-Type": "text/html" });
-          res.end("<h1>✅ Login successful! You can close this window.</h1>");
-          out({ success: true, provider: token.provider, expires_at: token.expires_at });
-          server.close();
-        } catch (err) {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end(`Login failed: ${err.message}`);
-          die(err.message);
-        }
-      }
-    });
-    server.listen(19284, () => console.log("Waiting for OAuth callback on port 19284..."));
-    break;
-  }
-
   default:
     die(`Unknown command: ${subcommand}. Run 'meridian help' for usage.`);
 }

@@ -249,18 +249,6 @@ export async function openPaperTrade({
       price_source: entryPriceSource,
       snapshot: entrySnapshot,
     },
-    bin_range: {
-      lower_bin: entrySnapshot?.active_bin != null && meta?.bins_below != null
-        ? entrySnapshot.active_bin - Number(meta.bins_below)
-        : null,
-      upper_bin: entrySnapshot?.active_bin != null
-        ? entrySnapshot.active_bin + Number(meta?.bins_above || 0)
-        : null,
-      active_bin_at_entry: entrySnapshot?.active_bin ?? null,
-      bin_step: entrySnapshot?.bin_step ?? meta?.bin_step ?? null,
-    },
-    oor_minutes: 0,
-    last_oor_at: null,
     latest_mark: {
       marked_at: nowIso(now),
       price: entryPrice,
@@ -300,7 +288,6 @@ export async function markPaperTrade({
   returnPct = 0,
   unrealizedPnlSol = 0,
   evaluation = null,
-  inRange = true,
   now = Date.now(),
 } = {}) {
   let markedTrade = null;
@@ -313,16 +300,7 @@ export async function markPaperTrade({
       active_bin: activeBin,
       return_pct: Number(returnPct) || 0,
       unrealized_pnl_sol: roundSol(unrealizedPnlSol),
-      in_range: inRange,
     };
-    // Track cumulative OOR minutes
-    if (!inRange) {
-      const lastMarkTime = trade.latest_mark_at ? Date.parse(trade.latest_mark_at) : (Date.parse(trade.opened_at) || now);
-      const elapsedMin = Math.max(1, Math.round((now - lastMarkTime) / 60_000));
-      trade.oor_minutes = (trade.oor_minutes || 0) + elapsedMin;
-      trade.last_oor_at = nowIso(now);
-    }
-    trade.latest_mark_at = nowIso(now);
     if (evaluation?.horizon_min != null) {
       trade.evaluations ||= {};
       trade.evaluations[String(evaluation.horizon_min)] = clone(evaluation);
@@ -334,8 +312,6 @@ export async function markPaperTrade({
       payload: {
         return_pct: trade.latest_mark.return_pct,
         unrealized_pnl_sol: trade.latest_mark.unrealized_pnl_sol,
-        in_range: inRange,
-        oor_minutes: trade.oor_minutes || 0,
       },
     }));
     markedTrade = clone(trade);
@@ -484,42 +460,34 @@ export function purgePaperState({ filePath, now = Date.now() } = {}) {
 
 export function getPaperPositions({ filePath } = {}) {
   const state = loadPaperState({ filePath });
-  const positions = getOpenTrades(state).map((trade) => {
-    const activeBin = trade.latest_mark?.active_bin ?? null;
-    const lowerBin = trade.bin_range?.lower_bin ?? null;
-    const upperBin = trade.bin_range?.upper_bin ?? null;
-    const isInRange = activeBin != null && lowerBin != null && upperBin != null
-      ? activeBin >= lowerBin && activeBin <= upperBin
-      : (trade.latest_mark?.in_range ?? true);
-    return {
-      position: trade.id,
-      pool: trade.pool_address,
-      pair: trade.pool_name || trade.pool_address || "paper trade",
-      base_mint: trade.base_mint,
-      lower_bin: lowerBin,
-      upper_bin: upperBin,
-      active_bin: activeBin,
-      in_range: isInRange,
-      unclaimed_fees_usd: null,
-      total_value_usd: roundSol((Number(trade.allocated_sol) || 0) + (Number(trade.latest_mark?.unrealized_pnl_sol) || 0)),
-      total_value_true_usd: null,
-      collected_fees_usd: null,
-      collected_fees_true_usd: null,
-      pnl_usd: roundSol(Number(trade.latest_mark?.unrealized_pnl_sol) || 0),
-      pnl_true_usd: null,
-      pnl_pct: Number(trade.latest_mark?.return_pct) || 0,
-      pnl_pct_derived: Number(trade.latest_mark?.return_pct) || 0,
-      pnl_pct_diff: 0,
-      pnl_pct_suspicious: false,
-      unclaimed_fees_true_usd: null,
-      fee_per_tvl_24h: null,
-      age_minutes: Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 60000)),
-      minutes_out_of_range: trade.oor_minutes || 0,
-      instruction: null,
-      paper_trade: true,
-      allocated_sol: trade.allocated_sol,
-    };
-  });
+  const positions = getOpenTrades(state).map((trade) => ({
+    position: trade.id,
+    pool: trade.pool_address,
+    pair: trade.pool_name || trade.pool_address || "paper trade",
+    base_mint: trade.base_mint,
+    lower_bin: null,
+    upper_bin: null,
+    active_bin: trade.latest_mark?.active_bin ?? null,
+    in_range: true,
+    unclaimed_fees_usd: null,
+    total_value_usd: roundSol((Number(trade.allocated_sol) || 0) + (Number(trade.latest_mark?.unrealized_pnl_sol) || 0)),
+    total_value_true_usd: null,
+    collected_fees_usd: null,
+    collected_fees_true_usd: null,
+    pnl_usd: roundSol(Number(trade.latest_mark?.unrealized_pnl_sol) || 0),
+    pnl_true_usd: null,
+    pnl_pct: Number(trade.latest_mark?.return_pct) || 0,
+    pnl_pct_derived: Number(trade.latest_mark?.return_pct) || 0,
+    pnl_pct_diff: 0,
+    pnl_pct_suspicious: false,
+    unclaimed_fees_true_usd: null,
+    fee_per_tvl_24h: null,
+    age_minutes: Math.max(0, Math.floor((Date.now() - Date.parse(trade.opened_at)) / 60000)),
+    minutes_out_of_range: 0,
+    instruction: null,
+    paper_trade: true,
+    allocated_sol: trade.allocated_sol,
+  }));
   return {
     wallet: null,
     total_positions: positions.length,
