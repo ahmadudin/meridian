@@ -338,6 +338,30 @@ export async function executeTool(name, args) {
           detail = null;
         }
       }
+
+      // ── Force active_bin from SDK when API returns null ──────────────────────
+      // The Meteora pool-detail API may omit active_bin, especially on newly
+      // created or low-liquidity pools. Rejecting the deploy is safer than
+      // opening a paper trade with a null entry snapshot.
+      let resolvedActiveBin = args.active_bin ?? detail?.active_bin ?? null;
+      if (!resolvedActiveBin && args.pool_address) {
+        try {
+          const sdkBin = await getActiveBin({ pool_address: args.pool_address });
+          resolvedActiveBin = sdkBin?.binId ?? null;
+        } catch (e) {
+          log("executor_warn", `getActiveBin SDK fallback failed for ${args.pool_address?.slice(0,8)}: ${e.message}`);
+          resolvedActiveBin = null;
+        }
+      }
+
+      if (!resolvedActiveBin) {
+        log("executor_warn", `deploy_position BLOCKED — active_bin is null for pool ${args.pool_address?.slice(0,8)}. LLM must call get_active_bin first or the pool RPC is stale.`);
+        return {
+          success: false,
+          error: "active_bin unavailable — call get_active_bin for this pool before deploying",
+        };
+      }
+
       result = await openPaperTrade({
         filePath: undefined,
         amountSol: args.amount_y ?? args.amount_sol,
@@ -356,7 +380,7 @@ export async function executeTool(name, args) {
               ? "args.active_price"
               : (detail?.pool_price != null ? "pool_detail.pool_price" : "unavailable"),
         entrySnapshot: {
-          active_bin: args.active_bin ?? detail?.active_bin ?? null,
+          active_bin: resolvedActiveBin,
           volatility: args.volatility ?? detail?.volatility ?? null,
           fee_tvl_ratio: args.fee_tvl_ratio ?? detail?.fee_active_tvl_ratio ?? detail?.fee_tvl_ratio ?? null,
           organic_score: args.organic_score ?? detail?.token_x?.organic_score ?? null,

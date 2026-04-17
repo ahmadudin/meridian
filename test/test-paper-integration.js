@@ -50,7 +50,14 @@ async function main() {
     amount_y: 0.5,
     strategy: "spot",
     base_mint: "MintA",
+    active_bin: 42,
+    entry_price: 1.2345,
+    entry_price_source: "provided",
+    base_fee: 1,
     bin_step: 100,
+    volatility: 1.5,
+    fee_tvl_ratio: 0.12,
+    organic_score: 77,
   });
   assert.equal(deploy.success, true);
   assert.equal(deploy.paper, true);
@@ -58,7 +65,7 @@ async function main() {
   assert.equal(statusAfterDeploy.open_trade_count, 1);
   const openedTrade = getPaperTradeById({ tradeId: deploy.position }).trade;
   assert.equal(openedTrade.entry.price, 1.2345);
-  assert.equal(openedTrade.entry.price_source, "pool_detail.pool_price");
+  assert.equal(openedTrade.entry.price_source, "provided");
   assert.equal(openedTrade.latest_mark.price, 1.2345);
 
   const rejected = await executeTool("deploy_position", {

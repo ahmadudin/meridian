@@ -20,7 +20,14 @@ function makeTempDir() {
 async function main() {
   const dir = makeTempDir();
   const filePath = path.join(dir, "paper-state.json");
-  initializePaperState({ filePath, startingBalanceSol: 2 });
+  const lessonsPath = path.join(dir, "lessons.json");
+  fs.writeFileSync(lessonsPath, JSON.stringify({ lessons: [], performance: [] }, null, 2));
+  fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
+  const prevCwd = process.cwd();
+
+  try {
+    process.chdir(dir);
+    initializePaperState({ filePath, startingBalanceSol: 2 });
 
   const ok = preflightPaperDeploy({
     filePath,
@@ -95,6 +102,9 @@ async function main() {
   assert.equal(Object.keys(state.open_trades).length, 0);
   assert.equal(Object.keys(state.closed_trades).length, 1);
 
+  const lessonsState = JSON.parse(fs.readFileSync(lessonsPath, "utf8"));
+  assert.equal(lessonsState.performance.length, 1);
+
   const status = getPaperStatus({ filePath });
   assert.equal(status.open_trade_count, 0);
   assert.equal(status.closed_trade_count, 1);
@@ -118,6 +128,9 @@ async function main() {
   assert.ok(rejects.by_reason_code.insufficient_free_balance >= 1);
 
   console.log("paper-engine tests passed");
+  } finally {
+    process.chdir(prevCwd);
+  }
 }
 
 main().catch((error) => {

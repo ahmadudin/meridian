@@ -1,4 +1,6 @@
 import { loadPaperState, reconcilePaperState, resetPaperState, savePaperState, withPaperStateTransaction } from "./paper-state.js";
+import { recordPerformance } from "./lessons.js";
+import { log } from "./logger.js";
 
 function nowIso(now = Date.now()) {
   return new Date(now).toISOString();
@@ -16,6 +18,43 @@ function normalizeKey(value) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+async function recordPaperClosePerformance(closedTrade) {
+  if (!closedTrade) return;
+
+  const solPriceUsd = Number(closedTrade.meta?.sol_price) || 20;
+  const amountSol = Number(closedTrade.allocated_sol) || 0;
+  const returnPct = Number(closedTrade.final_return_pct) || 0;
+  const initialValueUsd = roundSol(amountSol * solPriceUsd);
+  const finalValueUsd = roundSol(initialValueUsd * (1 + returnPct / 100));
+  const feesEarnedUsd = roundSol((Number(closedTrade.meta?.fees_earned_sol) || 0) * solPriceUsd);
+
+  try {
+    await recordPerformance({
+      position: closedTrade.id,
+      pool: closedTrade.pool_address,
+      pool_name: closedTrade.pool_name,
+      base_mint: closedTrade.base_mint,
+      strategy: closedTrade.strategy ?? "spot",
+      bin_range: closedTrade.bin_range,
+      bin_step: closedTrade.meta?.bin_step ?? null,
+      volatility: closedTrade.meta?.volatility ?? null,
+      fee_tvl_ratio: closedTrade.meta?.fee_tvl_ratio ?? null,
+      organic_score: closedTrade.meta?.organic_score ?? null,
+      amount_sol: amountSol,
+      fees_earned_usd: feesEarnedUsd,
+      final_value_usd: finalValueUsd,
+      initial_value_usd: initialValueUsd,
+      minutes_in_range: closedTrade.meta?.minutes_in_range ?? 0,
+      minutes_held: closedTrade.meta?.minutes_held ?? 0,
+      close_reason: closedTrade.close_reason_code ?? "paper_close",
+      deployed_at: closedTrade.opened_at ?? null,
+      paper_trade: true,
+    });
+  } catch (error) {
+    log("paper_eval_warn", `recordPerformance failed for paper trade ${closedTrade.id}: ${error.message}`);
+  }
 }
 
 export function getTradeKeys({ poolAddress = null, baseMint = null, quoteMint = null } = {}) {
@@ -363,6 +402,9 @@ export async function closePaperTrade({
     }));
   });
   const reconciled = reconcilePaperState({ filePath, now });
+  if (closedTrade) {
+    await recordPaperClosePerformance(closedTrade);
+  }
   return { ok: true, closedTrade, wallet: reconciled.state.wallet };
 }
 
